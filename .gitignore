@@ -1,0 +1,8 @@
+/client
+/client.o
+/common.o
+/ex3-cpu.o
+/ex3.o
+/randomize_images.o
+/server
+/server.o
