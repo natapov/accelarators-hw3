@@ -12,6 +12,7 @@
 
 #include <infiniband/verbs.h>
 #define NSLOTS 16
+auto my_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC;
 class server_rpc_context : public rdma_server_context {
 private:
     std::unique_ptr<queue_server> gpu_context;
@@ -372,7 +373,6 @@ private:
 public:
     client_queues_context(uint16_t tcp_port) : rdma_client_context(tcp_port)
     {
-        auto my_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC;
         /* TODO communicate with server to discover number of queues, necessary
          * rkeys / address, or other additional information needed to operate
          * the GPU queues remotely. */
@@ -402,12 +402,12 @@ public:
     virtual void set_input_images(uchar *images_target, uchar* images_reference, size_t bytes) override
     {
         // TODO register memory
-        mr_images_target = ibv_reg_mr(pd, images_target, bytes, IBV_ACCESS_REMOTE_READ);
+        mr_images_target = ibv_reg_mr(pd, images_target, bytes, my_flags);
         if (!mr_images_target) {
             perror("ibv_reg_mr() failed for input images");
             exit(1);
         }
-        mr_images_reference = ibv_reg_mr(pd, images_reference, bytes, IBV_ACCESS_REMOTE_READ);
+        mr_images_reference = ibv_reg_mr(pd, images_reference, bytes, my_flags);
         if (!mr_images_reference) {
             perror("ibv_reg_mr() failed for input images");
             exit(1);
@@ -418,7 +418,7 @@ public:
     {
         // TODO register memory
         /* register a memory region for the output images. */
-        mr_images_out = ibv_reg_mr(pd, images_out, bytes, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+        mr_images_out = ibv_reg_mr(pd, images_out, bytes, my_flags);
         if (!mr_images_out) {
             perror("ibv_reg_mr() failed for output images");
             exit(1);
