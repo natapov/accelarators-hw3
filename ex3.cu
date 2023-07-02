@@ -11,7 +11,7 @@
 #include <arpa/inet.h>
 
 #include <infiniband/verbs.h>
-
+#define NSLOTS 16
 class server_rpc_context : public rdma_server_context {
 private:
     std::unique_ptr<queue_server> gpu_context;
@@ -275,9 +275,10 @@ public:
 
 struct Info {
     int number_of_queues;
-    struct ibv_mr* mr_cpu_to_gpu;
-    struct ibv_mr* mr_gpu_to_cpu;
-
+    void* ci_addr;
+    void* pi_addr;
+    int gpu_to_cpu_rkey;
+    int cpu_to_gpu_rkey;
 };
 class server_queues_context : public rdma_server_context {
 private:
@@ -296,15 +297,19 @@ public:
         Info my_info;
 
         mr_cpu_to_gpu =
-            ibv_reg_mr(pd, &(gpu_context.cpu_to_gpu_queues), sizeof(gpu_context.cpu_to_gpu_queues), my_flags);
+            ibv_reg_mr(pd, gpu_context.cpu_to_gpu_queues, sizeof(queue<cpu_to_gpu_queues_entry>), my_flags);
         mr_gpu_to_cpu =
-            ibv_reg_mr(pd, &(gpu_context.cpu_to_gpu_queues), sizeof(gpu_context.cpu_to_gpu_queues), my_flags);
+            ibv_reg_mr(pd, gpu_context.gpu_to_cpu_queues, sizeof(queue<gpu_to_cpu_queues_entry>), my_flags);
         
-        
-        my_info.number_of_queues = gpu_context.blocks;
-        my_info.mr_cpu_to_gpu = mr_cpu_to_gpu;
-        my_info.mr_gpu_to_cpu = mr_gpu_to_cpu;
+        assert(mr_cpu_to_gpu);
+        assert(mr_gpu_to_cpu);
 
+        my_info.number_of_queues = gpu_context.blocks;
+        my_info.gpu_to_cpu_rkey = mr_gpu_to_cpu->rkey;
+        my_info.cpu_to_gpu_rkey = mr_cpu_to_gpu->rkey;
+
+        my_info.ci_addr = &(gpu_context.cpu_to_gpu_queues[0].ci); //todo: change to offset;
+        my_info.pi_addr = &(gpu_context.gpu_to_cpu_queues[0].pi);
         send_over_socket(&my_info, sizeof(Info));
         /* TODO Exchange rkeys, addresses, and necessary information (e.g.
          * number of queues) with the client */
@@ -348,30 +353,46 @@ public:
 class client_queues_context : public rdma_client_context {
 private:
     int number_of_queues;
-
+    int consumer_index;
+    int producer_index;
+    void* ci_remote_addr;
+    void* pi_remote_addr;
+    struct ibv_mr* mr_indexes;
     struct ibv_mr* mr_images_in; /* Memory region for input images */
     struct ibv_mr* mr_images_out; /* Memory region for output images */
     
-    struct ibv_mr* mr_cpu_to_gpu;
-    struct ibv_mr* mr_gpu_to_cpu;
+    int cpu_to_gpu_rkey;
+    int gpu_to_cpu_rkey;
+
+    queue<cpu_to_gpu_queues_entry>* cpu_to_gpu_queues;
+    queue<gpu_to_cpu_queues_entry>* gpu_to_cpu_queues;
     /* TODO define other memory regions used by the client here */
 
 public:
     client_queues_context(uint16_t tcp_port) : rdma_client_context(tcp_port)
     {
+        auto my_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC;
         /* TODO communicate with server to discover number of queues, necessary
          * rkeys / address, or other additional information needed to operate
          * the GPU queues remotely. */
+        mr_indexes = ibv_reg_mr(pd, &(consumer_index), sizeof(int)*2, my_flags);
+
         Info server_info;
         recv_over_socket(&server_info, sizeof(Info));
         number_of_queues = server_info.number_of_queues;
-        mr_cpu_to_gpu = server_info.mr_cpu_to_gpu;
-        mr_gpu_to_cpu = server_info.mr_gpu_to_cpu;
+        cpu_to_gpu_rkey = server_info.cpu_to_gpu_rkey;
+        gpu_to_cpu_rkey = server_info.gpu_to_cpu_rkey;
+        ci_remote_addr = server_info.ci_addr;
+        pi_remote_addr = server_info.pi_addr;
+
+        assert(pi_remote_addr);
+        assert(ci_remote_addr);
     }
 
     ~client_queues_context()
     {
 	/* TODO terminate the server and release memory regions and other resources */
+        ibv_dereg_mr(mr_indexes);
     }
 
     virtual void set_input_images(uchar *images_target, uchar* images_reference, size_t bytes) override
@@ -388,7 +409,53 @@ public:
     {
         /* TODO use RDMA Write and RDMA Read operations to enqueue the task on
          * a CPU-GPU producer consumer queue running on the server. */
-        return false;
+        /* Create Send Work Request for RDMA Read */
+        struct ibv_send_wr wr;
+        struct ibv_sge sge;
+        struct ibv_send_wr *bad_wr;
+        
+        memset(&wr, 0, sizeof(wr));
+
+        wr.wr_id = job_id;
+        wr.opcode = IBV_WR_RDMA_READ;
+        wr.send_flags = IBV_SEND_SIGNALED;
+        wr.wr.rdma.remote_addr = (uintptr_t) ci_remote_addr;  /* Address of remote memory */
+        wr.wr.rdma.rkey = cpu_to_gpu_rkey;  /* Rkey of remote memory */
+
+        sge.addr = (uintptr_t)&consumer_index;  /* Local memory address */
+        sge.length = sizeof(consumer_index);  /* Length of data to write */
+        sge.lkey = mr_indexes->lkey;  /* Lkey of local memory */
+
+        wr.sg_list = &sge;
+        wr.num_sge = 1;
+
+        /* Post Send Work Request */
+        if (ibv_post_send(qp, &wr, &bad_wr)) {
+            fprintf(stderr, "Error, ibv_post_send() failed\n");
+            return 1;
+        }
+
+        /* Poll for completion */
+        {
+            struct ibv_wc wc;
+            int ne;
+            do {
+                ne = ibv_poll_cq(cq, 1, &wc);
+            } while (ne == 0);
+
+            if (wc.status != IBV_WC_SUCCESS) {
+                fprintf(stderr, "Error, completion with status 0x%x\n", wc.status);
+                return 1;
+            }
+        }
+        printf("did write, job_id: %d\n", job_id);
+
+        printf("consumer_index %d\n", consumer_index);
+        printf("producer_index %d\n", producer_index);
+
+        assert(consumer_index < 16);
+        assert(producer_index < 16);
+        return true;
     }
 
     virtual bool dequeue(int *img_id) override

@@ -36,6 +36,7 @@
             "type": "cuda-gdb",
             "request": "launch",
             "program": "${workspaceFolder}/client",
+            "preLaunchTask": "make",
             "args": "queue 12345",
             "initCommands": ["set cuda api_failures stop"]
 
