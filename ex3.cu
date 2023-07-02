@@ -358,7 +358,8 @@ private:
     void* ci_remote_addr;
     void* pi_remote_addr;
     struct ibv_mr* mr_indexes;
-    struct ibv_mr* mr_images_in; /* Memory region for input images */
+    struct ibv_mr* mr_images_target; /* Memory region for input images */
+    struct ibv_mr* mr_images_reference; /* Memory region for input images */
     struct ibv_mr* mr_images_out; /* Memory region for output images */
     
     int cpu_to_gpu_rkey;
@@ -393,16 +394,35 @@ public:
     {
 	/* TODO terminate the server and release memory regions and other resources */
         ibv_dereg_mr(mr_indexes);
+        ibv_dereg_mr(mr_images_target);
+        ibv_dereg_mr(mr_images_reference);
+        ibv_dereg_mr(mr_images_out);
     }
 
     virtual void set_input_images(uchar *images_target, uchar* images_reference, size_t bytes) override
     {
         // TODO register memory
+        mr_images_target = ibv_reg_mr(pd, images_target, bytes, IBV_ACCESS_REMOTE_READ);
+        if (!mr_images_target) {
+            perror("ibv_reg_mr() failed for input images");
+            exit(1);
+        }
+        mr_images_reference = ibv_reg_mr(pd, images_reference, bytes, IBV_ACCESS_REMOTE_READ);
+        if (!mr_images_reference) {
+            perror("ibv_reg_mr() failed for input images");
+            exit(1);
+        }
     }
 
     virtual void set_output_images(uchar *images_out, size_t bytes) override
     {
         // TODO register memory
+        /* register a memory region for the output images. */
+        mr_images_out = ibv_reg_mr(pd, images_out, bytes, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+        if (!mr_images_out) {
+            perror("ibv_reg_mr() failed for output images");
+            exit(1);
+        }
     }
 
     virtual bool enqueue(int job_id, uchar *target, uchar *reference, uchar *result) override
@@ -410,44 +430,15 @@ public:
         /* TODO use RDMA Write and RDMA Read operations to enqueue the task on
          * a CPU-GPU producer consumer queue running on the server. */
         /* Create Send Work Request for RDMA Read */
-        struct ibv_send_wr wr;
-        struct ibv_sge sge;
-        struct ibv_send_wr *bad_wr;
         
-        memset(&wr, 0, sizeof(wr));
+        post_rdma_read(
+            &consumer_index,                 // local_src
+            sizeof(consumer_index),   // len
+            mr_indexes->lkey,            // lkey
+            (uintptr_t) ci_remote_addr,     // remote_dst
+            cpu_to_gpu_rkey,     // rkey
+            job_id);                    // wr_id
 
-        wr.wr_id = job_id;
-        wr.opcode = IBV_WR_RDMA_READ;
-        wr.send_flags = IBV_SEND_SIGNALED;
-        wr.wr.rdma.remote_addr = (uintptr_t) ci_remote_addr;  /* Address of remote memory */
-        wr.wr.rdma.rkey = cpu_to_gpu_rkey;  /* Rkey of remote memory */
-
-        sge.addr = (uintptr_t)&consumer_index;  /* Local memory address */
-        sge.length = sizeof(consumer_index);  /* Length of data to write */
-        sge.lkey = mr_indexes->lkey;  /* Lkey of local memory */
-
-        wr.sg_list = &sge;
-        wr.num_sge = 1;
-
-        /* Post Send Work Request */
-        if (ibv_post_send(qp, &wr, &bad_wr)) {
-            fprintf(stderr, "Error, ibv_post_send() failed\n");
-            return 1;
-        }
-
-        /* Poll for completion */
-        {
-            struct ibv_wc wc;
-            int ne;
-            do {
-                ne = ibv_poll_cq(cq, 1, &wc);
-            } while (ne == 0);
-
-            if (wc.status != IBV_WC_SUCCESS) {
-                fprintf(stderr, "Error, completion with status 0x%x\n", wc.status);
-                return 1;
-            }
-        }
         printf("did write, job_id: %d\n", job_id);
 
         printf("consumer_index %d\n", consumer_index);
