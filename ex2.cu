@@ -310,9 +310,8 @@ public:
     int next_block = 0;
     int threadsPerBlock, arrsSizeBytes;
 
-    queue_server(int threads):
-        blocks(calc_blocks(threads))
-    {
+    queue_server(int threads) {
+        blocks = calc_blocks(threads);
         //TODO complete according to HW2
         //(This file should be almost identical to ex2.cu from homework 2.)
 

@@ -241,7 +241,7 @@ public:
         if (ncqes == 0)
             return false;
 
-	VERBS_WC_CHECK(wc);
+	    VERBS_WC_CHECK(wc);
 
         switch (wc.opcode) {
         case IBV_WC_SEND:
@@ -275,13 +275,15 @@ public:
 
 struct Info {
     int number_of_queues;
-    int rkey;
-    void* addr;
+    struct ibv_mr* mr_cpu_to_gpu;
+    struct ibv_mr* mr_gpu_to_cpu;
+
 };
 class server_queues_context : public rdma_server_context {
 private:
     queue_server gpu_context;
-
+    struct ibv_mr* mr_cpu_to_gpu;
+    struct ibv_mr* mr_gpu_to_cpu;
     /* TODO: add memory region(s) for CPU-GPU queues */
 
 public:
@@ -290,16 +292,30 @@ public:
         gpu_context(256)
     {
         /* TODO Initialize additional server MRs as needed. */
-        Info my_info = {1, 107, NULL};
+        auto my_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC;
+        Info my_info;
+
+        mr_cpu_to_gpu =
+            ibv_reg_mr(pd, &(gpu_context.cpu_to_gpu_queues), sizeof(gpu_context.cpu_to_gpu_queues), my_flags);
+        mr_gpu_to_cpu =
+            ibv_reg_mr(pd, &(gpu_context.cpu_to_gpu_queues), sizeof(gpu_context.cpu_to_gpu_queues), my_flags);
+        
+        
+        my_info.number_of_queues = gpu_context.blocks;
+        my_info.mr_cpu_to_gpu = mr_cpu_to_gpu;
+        my_info.mr_gpu_to_cpu = mr_gpu_to_cpu;
 
         send_over_socket(&my_info, sizeof(Info));
         /* TODO Exchange rkeys, addresses, and necessary information (e.g.
          * number of queues) with the client */
+
     }
 
     ~server_queues_context()
     {
         /* TODO destroy the additional server MRs here */
+        ibv_dereg_mr(mr_cpu_to_gpu);
+        ibv_dereg_mr(mr_gpu_to_cpu);
     }
     bool terminate = false;
     
@@ -318,19 +334,11 @@ public:
             }
             if (ncqes > 0) {
 		        VERBS_WC_CHECK(wc);
-                if (wc.opcode == IBV_WC_RECV) {
+                if (wc.opcode == IBV_WC_TM_DEL) {
                     /* Received a new request from the client */
-                    if (wc.wr_id == -1) {
-                        printf("Terminating...\n");
-                        terminate = true;
-                    }
-                    else if(wc.wr_id == -12) {
-                        printf("Hello world!!");
-                    }
-                    else {
-                        printf("Unexpected completion\n");
-                        assert(false);
-                    }
+                    printf("Terminating...\n");
+                    terminate = true;
+                    this->~server_queues_context();
                 }
             }
         }
@@ -341,9 +349,11 @@ class client_queues_context : public rdma_client_context {
 private:
     int number_of_queues;
 
-    struct ibv_mr *mr_images_in; /* Memory region for input images */
-    struct ibv_mr *mr_images_out; /* Memory region for output images */
+    struct ibv_mr* mr_images_in; /* Memory region for input images */
+    struct ibv_mr* mr_images_out; /* Memory region for output images */
     
+    struct ibv_mr* mr_cpu_to_gpu;
+    struct ibv_mr* mr_gpu_to_cpu;
     /* TODO define other memory regions used by the client here */
 
 public:
@@ -354,9 +364,9 @@ public:
          * the GPU queues remotely. */
         Info server_info;
         recv_over_socket(&server_info, sizeof(Info));
-        if(server_info.rkey == 107){
-            printf("HELLO world");
-        }
+        number_of_queues = server_info.number_of_queues;
+        mr_cpu_to_gpu = server_info.mr_cpu_to_gpu;
+        mr_gpu_to_cpu = server_info.mr_gpu_to_cpu;
     }
 
     ~client_queues_context()
