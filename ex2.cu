@@ -200,22 +200,18 @@ void process_image_kernel(uchar *target, uchar *reference, uchar *result){
 // Code assumes it is a power of two
 #define NSLOTS 16
 
-struct cpu_to_gpu_queues_entry {
+
+struct Entry {
     int job_id;
-    uchar *target, *reference, *img_out, *remote_img_out;
+    uchar* target;
+    uchar* reference;
+    uchar* img_out;
+    uchar* remote_img_out;
 };
 
-struct gpu_to_cpu_queues_entry {
-    int job_id;
-    uchar *img_out, *remote_img_out;
-};
-
-template <typename entry_type>
 struct queue
 {
-    using entry = entry_type;
-
-    entry data[NSLOTS];
+    Entry data[NSLOTS];
     char pad_a[128];
     cuda::atomic<int> pi;
     char pad_b[128];
@@ -226,7 +222,7 @@ struct queue
     queue():
     pi(0), ci(0), kill(false) {}
 
-    __host__ __device__ bool pop(entry *ent)
+    __host__ __device__ bool pop(Entry *ent)
     {
         int cur_pi = pi.load(memory_order_acquire);
         int cur_ci = ci.load(memory_order_relaxed);
@@ -239,7 +235,7 @@ struct queue
         return true;
     }
 
-    __host__ __device__ bool push(entry *ent)
+    __host__ __device__ bool push(Entry *ent)
     {
         int cur_ci = ci.load(memory_order_acquire);
         int cur_pi = pi.load(memory_order_relaxed);
@@ -252,12 +248,12 @@ struct queue
     }
 };
 
-__global__ void gpu_process_image_consumer(queue<cpu_to_gpu_queues_entry> *cpu_to_gpu_qeueus, queue<gpu_to_cpu_queues_entry> *gpu_to_cpu_qeueus) {
-    queue<cpu_to_gpu_queues_entry> *h2g = &(cpu_to_gpu_qeueus[blockIdx.x]);
-    queue<gpu_to_cpu_queues_entry> *g2h = &(gpu_to_cpu_qeueus[blockIdx.x]);
+__global__ void gpu_process_image_consumer(queue *cpu_to_gpu_qeueus, queue *gpu_to_cpu_qeueus) {
+    queue *h2g = &(cpu_to_gpu_qeueus[blockIdx.x]);
+    queue *g2h = &(gpu_to_cpu_qeueus[blockIdx.x]);
 
     int tid = threadIdx.x;
-    __shared__ cpu_to_gpu_queues_entry entry;
+    __shared__ Entry entry;
     __shared__ bool kill;
 
     if (tid == 0)
@@ -282,7 +278,7 @@ __global__ void gpu_process_image_consumer(queue<cpu_to_gpu_queues_entry> *cpu_t
         process_image(entry.target, entry.reference, entry.img_out);
         __syncthreads();
         if(tid ==0){
-            gpu_to_cpu_queues_entry out_entry = {
+            Entry out_entry = {
                 .job_id = entry.job_id,
                 .img_out = entry.img_out,
                 .remote_img_out = entry.remote_img_out};
@@ -304,8 +300,8 @@ public:
     //(This file should be almost identical to ex2.cu from homework 2.)
 
     int blocks;
-    queue<cpu_to_gpu_queues_entry> *cpu_to_gpu_queues;
-    queue<gpu_to_cpu_queues_entry> *gpu_to_cpu_queues;
+    queue *cpu_to_gpu_queues;
+    queue *gpu_to_cpu_queues;
     char *queue_buffer;
     int next_block = 0;
     int threadsPerBlock, arrsSizeBytes;
@@ -316,10 +312,10 @@ public:
         //(This file should be almost identical to ex2.cu from homework 2.)
 
         // TODO initialize host state
-        CUDA_CHECK(cudaMallocHost(&queue_buffer, blocks * (sizeof(queue<cpu_to_gpu_queues_entry>) + sizeof(queue<gpu_to_cpu_queues_entry>))));
+        CUDA_CHECK(cudaMallocHost(&queue_buffer, blocks * (sizeof(queue) + sizeof(queue))));
 
-        cpu_to_gpu_queues = new (queue_buffer) queue<cpu_to_gpu_queues_entry>[blocks];
-        gpu_to_cpu_queues = new (queue_buffer + sizeof(queue<cpu_to_gpu_queues_entry>[blocks])) queue<gpu_to_cpu_queues_entry>[blocks];
+        cpu_to_gpu_queues = new (queue_buffer) queue[blocks];
+        gpu_to_cpu_queues = new (queue_buffer + sizeof(queue[blocks])) queue[blocks];
 
         int concurentReduceCount = threads / (LEVELS / 2);
         arrsSizeBytes = sizeof(int) * concurentReduceCount * LEVELS;
@@ -337,8 +333,8 @@ public:
             cpu_to_gpu_queues[i].kill.store(true, memory_order_relaxed);
         }
         CUDA_CHECK(cudaDeviceSynchronize());
-        cpu_to_gpu_queues->~queue<cpu_to_gpu_queues_entry>();
-        gpu_to_cpu_queues->~queue<gpu_to_cpu_queues_entry>();
+        cpu_to_gpu_queues->~queue();
+        gpu_to_cpu_queues->~queue();
         CUDA_CHECK(cudaFreeHost(queue_buffer));
     }
 
@@ -347,7 +343,7 @@ public:
         //TODO complete according to HW2
         //(This file should be almost identical to ex2.cu from homework 2.)
         auto &next = cpu_to_gpu_queues[job_id % blocks];
-        cpu_to_gpu_queues_entry new_entry;
+        Entry new_entry;
         new_entry.job_id = job_id;
         new_entry.target = target;
         new_entry.reference = reference;
@@ -364,7 +360,7 @@ public:
             if (block == blocks){
                 block = 0;
             }
-            gpu_to_cpu_queues_entry entry;
+            Entry entry;
             if(gpu_to_cpu_queues[block].pop(&entry)){
                 // TODO return the job_id of the request that was completed.
                 *job_id = entry.job_id;
