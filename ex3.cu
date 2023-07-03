@@ -158,25 +158,16 @@ public:
     {
         /* register a memory region for the input images. */
         mr_images_target = ibv_reg_mr(pd, images_target, bytes, IBV_ACCESS_REMOTE_READ);
-        if (!mr_images_target) {
-            perror("ibv_reg_mr() failed for input images");
-            exit(1);
-        }
+        assert(mr_images_target);
         mr_images_reference = ibv_reg_mr(pd, images_reference, bytes, IBV_ACCESS_REMOTE_READ);
-        if (!mr_images_reference) {
-            perror("ibv_reg_mr() failed for input images");
-            exit(1);
-        }
+        assert(mr_images_reference);
     }
 
     virtual void set_output_images(uchar *images_out, size_t bytes) override
     {
         /* register a memory region for the output images. */
         mr_images_out = ibv_reg_mr(pd, images_out, bytes, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
-        if (!mr_images_out) {
-            perror("ibv_reg_mr() failed for output images");
-            exit(1);
-        }
+        assert(mr_images_out);
     }
 
     virtual bool enqueue(int job_id, uchar *target, uchar *reference, uchar *result) override
@@ -295,11 +286,6 @@ private:
     struct ibv_mr* mr_cpu_to_gpu;
     struct ibv_mr* mr_gpu_to_cpu;
     
-    uchar *images_target, *images_reference; /* Input images for all outstanding requests */
-    uchar *images_out; /* Output images for all outstanding requests */
-    struct ibv_mr *mr_images_target, *mr_images_reference; /* Memory region for input images */
-    struct ibv_mr *mr_images_out; /* Memory region for output images */
-
 public:
     explicit server_queues_context(uint16_t tcp_port) :
         rdma_server_context(tcp_port),
@@ -313,24 +299,34 @@ public:
             ibv_reg_mr(pd, gpu_context.cpu_to_gpu_queues, sizeof(queue), my_flags);
         mr_gpu_to_cpu =
             ibv_reg_mr(pd, gpu_context.gpu_to_cpu_queues, sizeof(queue), my_flags);
-        
         assert(mr_cpu_to_gpu);
         assert(mr_gpu_to_cpu);
 
+        my_info.c_to_g_ques.addr = mr_cpu_to_gpu->addr;
+        my_info.g_to_c_ques.addr = mr_gpu_to_cpu->addr;
+        my_info.c_to_g_ques.rkey = mr_cpu_to_gpu->rkey;
+        my_info.g_to_c_ques.rkey = mr_gpu_to_cpu->rkey;
         my_info.number_of_queues = gpu_context.blocks;
         my_info.ci_offset = (uchar*) &(gpu_context.cpu_to_gpu_queues[0].ci) - (uchar*) &(gpu_context.cpu_to_gpu_queues[0]); 
         my_info.pi_offset = (uchar*) &(gpu_context.gpu_to_cpu_queues[0].pi) - (uchar*) &(gpu_context.cpu_to_gpu_queues[0]);
+        my_info.images_reference.addr = mr_images_reference->addr;
+        my_info.images_reference.rkey = mr_images_reference->rkey;
+        my_info.images_target.addr = mr_images_target->addr;
+        my_info.images_target.rkey = mr_images_target->rkey;
+        my_info.images_out.addr = mr_images_out->addr;
+        my_info.images_out.rkey = mr_images_out->rkey;
         send_over_socket(&my_info, sizeof(Info));
         /* TODO Exchange rkeys, addresses, and necessary information (e.g.
          * number of queues) with the client */
 
     }
-
-    ~server_queues_context()
-    {
+    ~server_queues_context() {
         /* TODO destroy the additional server MRs here */
         ibv_dereg_mr(mr_cpu_to_gpu);
         ibv_dereg_mr(mr_gpu_to_cpu);
+        ibv_dereg_mr(mr_images_out);
+        ibv_dereg_mr(mr_images_reference);
+        ibv_dereg_mr(mr_images_target);
     }
     bool terminate = false;
     
@@ -368,13 +364,10 @@ struct Index_Pair{
 class client_queues_context : public rdma_client_context {
 private:
     /* TODO define other memory regions used by the client here */
-
-
     Info server_info;
 
     Index_Pair c_to_g;
     Index_Pair g_to_c;
-
 
     struct ibv_mr* mr_indexes;
     struct ibv_mr* mr_images_target; /* Memory region for input images */
@@ -421,10 +414,12 @@ public:
             perror("ibv_reg_mr() failed for input images");
             exit(1);
         }
+        //uint64_t remote_dst, uint32_t len, uint32_t rkey, void *local_src, uint32_t lkey, uint64_t wr_id, uint32_t *immediate = (uint32_t *)__null)
+        post_rdma_write((uint64_t) server_info.images_target.addr, bytes, server_info.images_target.rkey, mr_images_target->addr, mr_images_target->lkey, 1);
+        post_rdma_write((uint64_t) server_info.images_reference.addr, bytes, server_info.images_reference.rkey, mr_images_reference->addr, mr_images_reference->lkey, 2);
     }
 
-    virtual void set_output_images(uchar *images_out, size_t bytes) override
-    {
+    virtual void set_output_images(uchar *images_out, size_t bytes) override {
         // TODO register memory
         /* register a memory region for the output images. */
         mr_images_out = ibv_reg_mr(pd, images_out, bytes, my_flags);
