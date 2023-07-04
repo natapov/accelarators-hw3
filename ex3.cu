@@ -266,7 +266,7 @@ public:
 };
 
 struct Remote {
-    void* addr;
+    uchar* addr;
     int rkey;
 };
 struct Info {
@@ -368,13 +368,17 @@ private:
 
     Index_Pair c_to_g;
     Index_Pair g_to_c;
+    
+    Entry new_entry;
 
+    struct ibv_mr* mr_entry;
     struct ibv_mr* mr_indexes;
     struct ibv_mr* mr_images_target; /* Memory region for input images */
     struct ibv_mr* mr_images_reference; /* Memory region for input images */
     struct ibv_mr* mr_images_out; /* Memory region for output images */
     
-
+    int wr_num = 0;
+    int output_index = 0;
 public:
     client_queues_context(uint16_t tcp_port) : rdma_client_context(tcp_port)
     {
@@ -429,27 +433,65 @@ public:
         }
     }
 
+    int is_que_empty(Index_Pair p) {
+        assert(p.pi < 16);
+        assert(p.ci < 16);
+        return p.pi-p.ci == 0;
+    }
+
+    int is_que_full(Index_Pair p) {
+        assert(p.pi < 16);
+        assert(p.ci < 16);
+        return p.pi-p.ci == NSLOTS;
+    }
+
     virtual bool enqueue(int job_id, uchar *target, uchar *reference, uchar *result) override
     {
         /* TODO use RDMA Write and RDMA Read operations to enqueue the task on
          * a CPU-GPU producer consumer queue running on the server. */
         /* Create Send Work Request for RDMA Read */
-        
+        queue* que_arr  = (queue*) server_info.c_to_g_ques.addr;
+        queue* curr_que = &(que_arr[job_id % server_info.number_of_queues]);
         post_rdma_read(
             &c_to_g.ci,                 // local_src
             sizeof(c_to_g.ci),          // len
             mr_indexes->lkey,                // lkey
-            (uintptr_t) server_info.c_to_g_ques.addr + server_info.ci_offset,     // remote_dst
+            ((int) curr_que) + server_info.ci_offset,     // remote_dst
             server_info.c_to_g_ques.rkey,   // rkey
-            job_id);                        // wr_id
+            wr_num++);                        // wr_id
+
+        if(is_que_full(c_to_g)) {
+            return false;
+        }
+        
+        new_entry.job_id    = job_id;
+        new_entry.target    = &(server_info.images_target.addr   [job_id * IMG_BYTES]);
+        new_entry.reference = &(server_info.images_reference.addr[job_id * IMG_BYTES]);
+        new_entry.img_out   = &(server_info.images_out.addr      [job_id * IMG_BYTES]);
+        auto dest           = (uint64_t)&(curr_que[job_id]);
+        
+        //write entry
+        post_rdma_write(dest,
+                        sizeof(Entry),
+                        server_info.c_to_g_ques.rkey,
+                        mr_entry->addr,
+                        mr_entry->lkey,
+                        wr_num++);
+        c_to_g.pi += 1;
+        //write consumer index
+        
+        post_rdma_write(
+                        ((int) curr_que) + server_info.pi_offset,
+                        sizeof(c_to_g.pi),
+                        server_info.c_to_g_ques.rkey,
+                        mr_indexes->addr + sizeof(int),
+                        mr_indexes->lkey,
+                        wr_num++);
+
 
         printf("did write, job_id: %d\n", job_id);
-
         printf("consumer_index %d\n", c_to_g.ci);
         printf("producer_index %d\n", c_to_g.pi);
-
-        assert(c_to_g.ci < 16);
-        assert(c_to_g.pi < 16);
         return true;
     }
 
