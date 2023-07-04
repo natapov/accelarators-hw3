@@ -170,8 +170,7 @@ public:
         assert(mr_images_out);
     }
 
-    virtual bool enqueue(int job_id, uchar *target, uchar *reference, uchar *result) override
-    {
+    virtual bool enqueue(int job_id, uchar *target, uchar *reference, uchar *result) override {
         if ((requests_sent - send_cqes_received) == OUTSTANDING_REQUESTS)
             return false;
 
@@ -302,18 +301,18 @@ public:
         assert(mr_cpu_to_gpu);
         assert(mr_gpu_to_cpu);
 
-        my_info.c_to_g_ques.addr = mr_cpu_to_gpu->addr;
-        my_info.g_to_c_ques.addr = mr_gpu_to_cpu->addr;
+        my_info.c_to_g_ques.addr = (uchar*) mr_cpu_to_gpu->addr;
+        my_info.g_to_c_ques.addr = (uchar*) mr_gpu_to_cpu->addr;
         my_info.c_to_g_ques.rkey = mr_cpu_to_gpu->rkey;
         my_info.g_to_c_ques.rkey = mr_gpu_to_cpu->rkey;
         my_info.number_of_queues = gpu_context.blocks;
         my_info.ci_offset = (uchar*) &(gpu_context.cpu_to_gpu_queues[0].ci) - (uchar*) &(gpu_context.cpu_to_gpu_queues[0]); 
         my_info.pi_offset = (uchar*) &(gpu_context.gpu_to_cpu_queues[0].pi) - (uchar*) &(gpu_context.cpu_to_gpu_queues[0]);
-        my_info.images_reference.addr = mr_images_reference->addr;
+        my_info.images_reference.addr = (uchar*) mr_images_reference->addr;
         my_info.images_reference.rkey = mr_images_reference->rkey;
-        my_info.images_target.addr = mr_images_target->addr;
+        my_info.images_target.addr = (uchar*) mr_images_target->addr;
         my_info.images_target.rkey = mr_images_target->rkey;
-        my_info.images_out.addr = mr_images_out->addr;
+        my_info.images_out.addr = (uchar*) mr_images_out->addr;
         my_info.images_out.rkey = mr_images_out->rkey;
         send_over_socket(&my_info, sizeof(Info));
         /* TODO Exchange rkeys, addresses, and necessary information (e.g.
@@ -386,6 +385,9 @@ public:
          * rkeys / address, or other additional information needed to operate
          * the GPU queues remotely. */
         mr_indexes = ibv_reg_mr(pd, &(c_to_g), sizeof(Index_Pair)*2, my_flags);
+        assert(mr_indexes);
+        mr_entry = ibv_reg_mr(pd, &(new_entry), sizeof(Entry), my_flags);
+        assert(mr_entry);
 
         recv_over_socket(&server_info, sizeof(Info));
 
@@ -456,7 +458,7 @@ public:
             &c_to_g.ci,                 // local_src
             sizeof(c_to_g.ci),          // len
             mr_indexes->lkey,                // lkey
-            ((int) curr_que) + server_info.ci_offset,     // remote_dst
+            ((uint64_t) curr_que) + server_info.ci_offset,     // remote_dst
             server_info.c_to_g_ques.rkey,   // rkey
             wr_num++);                        // wr_id
 
@@ -481,10 +483,10 @@ public:
         //write consumer index
         
         post_rdma_write(
-                        ((int) curr_que) + server_info.pi_offset,
+                        ((uint64_t) curr_que) + server_info.pi_offset,
                         sizeof(c_to_g.pi),
                         server_info.c_to_g_ques.rkey,
-                        mr_indexes->addr + sizeof(int),
+                        &c_to_g.pi,
                         mr_indexes->lkey,
                         wr_num++);
 
@@ -499,6 +501,52 @@ public:
     {
         /* TODO use RDMA Write and RDMA Read operations to detect the completion and dequeue a processed image
          * through a CPU-GPU producer consumer queue running on the server. */
+        int que_num = rand() % server_info.number_of_queues;
+        for (int i = 0; i < server_info.number_of_queues; ++i) {
+            que_num = (que_num + i) % server_info.number_of_queues;
+            queue* que_arr  = (queue*) server_info.g_to_c_ques.addr;
+            queue* curr_que = &(que_arr[que_num % server_info.number_of_queues]);
+            post_rdma_read(
+                &g_to_c.pi,                 // local_src
+                sizeof(g_to_c.pi),          // len
+                mr_indexes->lkey,                // lkey
+                ((uint64_t) curr_que) + server_info.pi_offset,     // remote_dst
+                server_info.g_to_c_ques.rkey,   // rkey
+                wr_num++);
+            if(is_que_full(c_to_g)) {
+                continue;
+            }    
+            auto dest = (uint64_t)&(curr_que[g_to_c.ci]);
+            post_rdma_read(
+                &new_entry,                 // local_src
+                sizeof(Entry),          // len
+                mr_entry->lkey,                // lkey
+                dest,     // remote_dst
+                server_info.g_to_c_ques.rkey,   // rkey
+                wr_num++);
+
+            *img_id = new_entry.job_id;
+            auto copy_src = &(server_info.images_out.addr  [new_entry.job_id * IMG_BYTES]);
+            auto copy_dst = (uint64_t) &(((uchar*)mr_images_out->addr)[new_entry.job_id * IMG_BYTES]);
+            post_rdma_read(
+                copy_src,                 // local_src
+                IMG_BYTES,          // len
+                mr_images_out->lkey,                // lkey
+                copy_dst,     // remote_dst
+                server_info.images_out.rkey,   // rkey
+                wr_num++);
+
+            g_to_c.ci += 1;
+
+            post_rdma_write(
+                            ((uint64_t) curr_que) + server_info.ci_offset,
+                            sizeof(g_to_c.ci),
+                            server_info.g_to_c_ques.rkey,
+                            &g_to_c.ci,
+                            mr_indexes->lkey,
+                            wr_num++);
+            return true;
+        }
         return false;
     }
 };
