@@ -513,6 +513,8 @@ public:
                 ((uint64_t) curr_que) + server_info.pi_offset,     // remote_dst
                 server_info.g_to_c_ques.rkey,   // rkey
                 wr_num++);
+            
+            c_to_g.pi = c_to_g.pi % 16;
             if(is_que_full(c_to_g)) {
                 continue;
             }    
@@ -545,6 +547,9 @@ public:
                             &g_to_c.ci,
                             mr_indexes->lkey,
                             wr_num++);
+            printf("did deque, job_id: %d\n", new_entry.job_id);
+            printf("consumer_index %d\n", g_to_c.ci);
+            printf("producer_index %d\n", g_to_c.pi);
             return true;
         }
         return false;
