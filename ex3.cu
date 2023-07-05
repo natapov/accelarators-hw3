@@ -335,22 +335,22 @@ public:
          * client use one sided operations, we only need one kind of message to
          * terminate the server at the end. */
         while (!terminate) {
-            // Step 1: Poll for CQE
-            struct ibv_wc wc;
-            int ncqes = ibv_poll_cq(cq, 1, &wc);
-            if (ncqes < 0) {
-                perror("ibv_poll_cq() failed");
-                exit(1);
-            }
-            if (ncqes > 0) {
-		        VERBS_WC_CHECK(wc);
-                if (wc.opcode == IBV_WC_TM_DEL) {
-                    /* Received a new request from the client */
-                    printf("Terminating...\n");
-                    terminate = true;
-                    this->~server_queues_context();
-                }
-            }
+        //     // Step 1: Poll for CQE
+        //     struct ibv_wc wc;
+        //     int ncqes = ibv_poll_cq(cq, 1, &wc);
+        //     if (ncqes < 0) {
+        //         perror("ibv_poll_cq() failed");
+        //         exit(1);
+        //     }
+        //     if (ncqes > 0) {
+		//         VERBS_WC_CHECK(wc);
+        //         if (wc.opcode == IBV_WC_TM_DEL) {
+        //             /* Received a new request from the client */
+        //             printf("Terminating...\n");
+        //             terminate = true;
+        //             this->~server_queues_context();
+        //         }
+        //     }
         }
     }
 };
@@ -384,10 +384,10 @@ public:
         /* TODO communicate with server to discover number of queues, necessary
          * rkeys / address, or other additional information needed to operate
          * the GPU queues remotely. */
-        mr_indexes = ibv_reg_mr(pd, &(c_to_g), sizeof(Index_Pair)*2, my_flags);
-        assert(mr_indexes);
-        mr_entry = ibv_reg_mr(pd, &(new_entry), sizeof(Entry), my_flags);
-        assert(mr_entry);
+        // mr_indexes = ibv_reg_mr(pd, &(c_to_g), sizeof(Index_Pair)*2, my_flags);
+        // assert(mr_indexes);
+        // mr_entry = ibv_reg_mr(pd, &(new_entry), sizeof(Entry), my_flags);
+        // assert(mr_entry);
 
         recv_over_socket(&server_info, sizeof(Info));
 
@@ -406,7 +406,42 @@ public:
         ibv_dereg_mr(mr_images_reference);
         ibv_dereg_mr(mr_images_out);
     }
+    void read(void *local_dst, uint32_t len, uint32_t lkey, uint64_t remote_src, uint32_t rkey, uint64_t wr_id) {
+        post_rdma_read(local_dst, len, lkey, remote_src, rkey, wr_id);
+        int ncqes;
+        struct ibv_wc wc;
+        do{
+            ncqes = ibv_poll_cq(cq, 1, &wc);
+        }while(ncqes == 0);
 
+        if(ncqes < 0) {
+            perror("ibv_poll_cq() failed");
+            exit(1);
+        }
+        VERBS_WC_CHECK(wc);
+        if(wc.opcode != IBV_WC_RDMA_READ) {
+            perror("not an rdma read!");
+            exit(1);
+        }
+    }
+    void write(uint64_t remote_dst, uint32_t len, uint32_t rkey, void *local_src, uint32_t lkey, uint64_t wr_id, uint32_t *immediate = 0) {
+        post_rdma_write(remote_dst, len, rkey, local_src, lkey, wr_id, immediate);
+        int ncqes;
+        struct ibv_wc wc;
+        do{
+            ncqes = ibv_poll_cq(cq, 1, &wc);
+        }while(ncqes == 0);
+
+        if(ncqes < 0) {
+            perror("ibv_poll_cq() failed");
+            exit(1);
+        }
+        VERBS_WC_CHECK(wc);
+        if(wc.opcode != IBV_WC_RDMA_WRITE) {
+            perror("not an rdma write!");
+            exit(1);
+        }
+    }
     virtual void set_input_images(uchar *images_target, uchar* images_reference, size_t bytes) override
     {
         // TODO register memory
@@ -421,8 +456,8 @@ public:
             exit(1);
         }
         //uint64_t remote_dst, uint32_t len, uint32_t rkey, void *local_src, uint32_t lkey, uint64_t wr_id, uint32_t *immediate = (uint32_t *)__null)
-        post_rdma_write((uint64_t) server_info.images_target.addr, bytes, server_info.images_target.rkey, mr_images_target->addr, mr_images_target->lkey, 1);
-        post_rdma_write((uint64_t) server_info.images_reference.addr, bytes, server_info.images_reference.rkey, mr_images_reference->addr, mr_images_reference->lkey, 2);
+        write((uint64_t) server_info.images_target.addr, bytes, server_info.images_target.rkey, mr_images_target->addr, mr_images_target->lkey, 1);
+        write((uint64_t) server_info.images_reference.addr, bytes, server_info.images_reference.rkey, mr_images_reference->addr, mr_images_reference->lkey, 2);
     }
 
     virtual void set_output_images(uchar *images_out, size_t bytes) override {
@@ -449,6 +484,7 @@ public:
 
     virtual bool enqueue(int job_id, uchar *target, uchar *reference, uchar *result) override
     {
+        return false;
         /* TODO use RDMA Write and RDMA Read operations to enqueue the task on
          * a CPU-GPU producer consumer queue running on the server. */
         /* Create Send Work Request for RDMA Read */
@@ -473,22 +509,22 @@ public:
         auto dest           = (uint64_t)&(curr_que[job_id]);
         
         //write entry
-        post_rdma_write(dest,
-                        sizeof(Entry),
-                        server_info.c_to_g_ques.rkey,
-                        mr_entry->addr,
-                        mr_entry->lkey,
-                        wr_num++);
+        write(dest,
+              sizeof(Entry),
+              server_info.c_to_g_ques.rkey,
+              mr_entry->addr,
+              mr_entry->lkey,
+              wr_num++);
         c_to_g.pi += 1;
         //write consumer index
         
-        post_rdma_write(
-                        ((uint64_t) curr_que) + server_info.pi_offset,
-                        sizeof(c_to_g.pi),
-                        server_info.c_to_g_ques.rkey,
-                        &c_to_g.pi,
-                        mr_indexes->lkey,
-                        wr_num++);
+        write(
+              ((uint64_t) curr_que) + server_info.pi_offset,
+              sizeof(c_to_g.pi),
+              server_info.c_to_g_ques.rkey,
+              &c_to_g.pi,
+              mr_indexes->lkey,
+              wr_num++);
 
 
         printf("did write, job_id: %d\n", job_id);
@@ -499,6 +535,7 @@ public:
 
     virtual bool dequeue(int *img_id) override
     {
+        return false;
         /* TODO use RDMA Write and RDMA Read operations to detect the completion and dequeue a processed image
          * through a CPU-GPU producer consumer queue running on the server. */
         int que_num = rand() % server_info.number_of_queues;
@@ -506,7 +543,7 @@ public:
             que_num = (que_num + i) % server_info.number_of_queues;
             queue* que_arr  = (queue*) server_info.g_to_c_ques.addr;
             queue* curr_que = &(que_arr[que_num % server_info.number_of_queues]);
-            post_rdma_read(
+            read(
                 &g_to_c.pi,                 // local_src
                 sizeof(g_to_c.pi),          // len
                 mr_indexes->lkey,                // lkey
@@ -519,7 +556,7 @@ public:
                 continue;
             }    
             auto dest = (uint64_t)&(curr_que[g_to_c.ci]);
-            post_rdma_read(
+            read(
                 &new_entry,                 // local_src
                 sizeof(Entry),          // len
                 mr_entry->lkey,                // lkey
@@ -530,7 +567,7 @@ public:
             *img_id = new_entry.job_id;
             auto copy_src = &(server_info.images_out.addr  [new_entry.job_id * IMG_BYTES]);
             auto copy_dst = (uint64_t) &(((uchar*)mr_images_out->addr)[new_entry.job_id * IMG_BYTES]);
-            post_rdma_read(
+            read(
                 copy_src,                 // local_src
                 IMG_BYTES,          // len
                 mr_images_out->lkey,                // lkey
@@ -540,13 +577,13 @@ public:
 
             g_to_c.ci += 1;
 
-            post_rdma_write(
-                            ((uint64_t) curr_que) + server_info.ci_offset,
-                            sizeof(g_to_c.ci),
-                            server_info.g_to_c_ques.rkey,
-                            &g_to_c.ci,
-                            mr_indexes->lkey,
-                            wr_num++);
+            write(
+                ((uint64_t) curr_que) + server_info.ci_offset,
+                sizeof(g_to_c.ci),
+                server_info.g_to_c_ques.rkey,
+                &g_to_c.ci,
+                mr_indexes->lkey,
+                wr_num++);
             printf("did deque, job_id: %d\n", new_entry.job_id);
             printf("consumer_index %d\n", g_to_c.ci);
             printf("producer_index %d\n", g_to_c.pi);
