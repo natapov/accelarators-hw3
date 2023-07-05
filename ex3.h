@@ -30,6 +30,7 @@ typedef unsigned char uchar;
 #define VERBS_WC_CHECK(wc) do { \
     if ((wc).status != IBV_WC_SUCCESS) { \
         printf("ERROR: got CQE with error '%s' (%d) (%s:%d)\n", ibv_wc_status_str(wc.status), wc.status, __FILE__, __LINE__); \
+        assert(false);\
         exit(1); \
     } \
 } while (0)
