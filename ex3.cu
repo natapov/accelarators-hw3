@@ -406,10 +406,10 @@ public:
         /* TODO communicate with server to discover number of queues, necessary
          * rkeys / address, or other additional information needed to operate
          * the GPU queues remotely. */
-        // mr_indexes = ibv_reg_mr(pd, &(c_to_g), sizeof(Index_Pair)*2, my_flags);
-        // assert(mr_indexes);
-        // mr_entry = ibv_reg_mr(pd, &(new_entry), sizeof(Entry), my_flags);
-        // assert(mr_entry);
+        mr_indexes = ibv_reg_mr(pd, &(c_to_g), sizeof(Index_Pair)*2, my_flags);
+        assert(mr_indexes);
+        mr_entry = ibv_reg_mr(pd, &(new_entry), sizeof(Entry), my_flags);
+        assert(mr_entry);
 
         recv_over_socket(&server_info, sizeof(Info));
 
@@ -506,13 +506,12 @@ public:
 
     virtual bool enqueue(int job_id, uchar *target, uchar *reference, uchar *result) override
     {
-        return false;
         /* TODO use RDMA Write and RDMA Read operations to enqueue the task on
          * a CPU-GPU producer consumer queue running on the server. */
         /* Create Send Work Request for RDMA Read */
         queue* que_arr  = (queue*) server_info.c_to_g_ques.addr;
-        queue* curr_que = &(que_arr[job_id % server_info.number_of_queues]);
-        post_rdma_read(
+        Entry* curr_que = (Entry*) &(que_arr[job_id % server_info.number_of_queues]);
+        read(
             &c_to_g.ci,                 // local_src
             sizeof(c_to_g.ci),          // len
             mr_indexes->lkey,                // lkey
@@ -557,14 +556,14 @@ public:
 
     virtual bool dequeue(int *img_id) override
     {
-        return false;
         /* TODO use RDMA Write and RDMA Read operations to detect the completion and dequeue a processed image
          * through a CPU-GPU producer consumer queue running on the server. */
         int que_num = rand() % server_info.number_of_queues;
         for (int i = 0; i < server_info.number_of_queues; ++i) {
             que_num = (que_num + i) % server_info.number_of_queues;
+            assert(que_num < server_info.number_of_queues);
             queue* que_arr  = (queue*) server_info.g_to_c_ques.addr;
-            queue* curr_que = &(que_arr[que_num % server_info.number_of_queues]);
+            Entry* curr_que = (Entry*) &(que_arr[que_num]);
             read(
                 &g_to_c.pi,                 // local_src
                 sizeof(g_to_c.pi),          // len
@@ -573,8 +572,8 @@ public:
                 server_info.g_to_c_ques.rkey,   // rkey
                 wr_num++);
             
-            c_to_g.pi = c_to_g.pi % 16;
-            if(is_que_full(c_to_g)) {
+            g_to_c.pi = g_to_c.pi % 16;
+            if(is_que_empty(g_to_c)) {
                 continue;
             }    
             auto dest = (uint64_t)&(curr_que[g_to_c.ci]);
