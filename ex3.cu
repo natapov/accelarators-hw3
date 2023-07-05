@@ -12,6 +12,7 @@
 
 #include <infiniband/verbs.h>
 #define NSLOTS 16
+#define ALL_IMAGES_BYTES (IMG_BYTES * N_IMAGES)
 auto my_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC;
 class server_rpc_context : public rdma_server_context {
 private:
@@ -157,16 +158,17 @@ public:
     virtual void set_input_images(uchar *images_target, uchar* images_reference, size_t bytes) override
     {
         /* register a memory region for the input images. */
-        mr_images_target = ibv_reg_mr(pd, images_target, bytes, IBV_ACCESS_REMOTE_READ);
+        assert(bytes == ALL_IMAGES_BYTES);
+        mr_images_target = ibv_reg_mr(pd, images_target, ALL_IMAGES_BYTES, IBV_ACCESS_REMOTE_READ);
         assert(mr_images_target);
-        mr_images_reference = ibv_reg_mr(pd, images_reference, bytes, IBV_ACCESS_REMOTE_READ);
+        mr_images_reference = ibv_reg_mr(pd, images_reference, ALL_IMAGES_BYTES, IBV_ACCESS_REMOTE_READ);
         assert(mr_images_reference);
     }
 
     virtual void set_output_images(uchar *images_out, size_t bytes) override
     {
         /* register a memory region for the output images. */
-        mr_images_out = ibv_reg_mr(pd, images_out, bytes, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+        mr_images_out = ibv_reg_mr(pd, images_out, ALL_IMAGES_BYTES, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
         assert(mr_images_out);
     }
 
@@ -284,7 +286,12 @@ private:
     queue_server gpu_context;
     struct ibv_mr* mr_cpu_to_gpu;
     struct ibv_mr* mr_gpu_to_cpu;
-    
+    struct ibv_mr* mr_all_images_reference;
+    struct ibv_mr* mr_all_images_target;
+    struct ibv_mr* mr_all_images_out;
+    uchar* all_images_target;
+    uchar* all_images_reference;
+    uchar* all_images_out; 
 public:
     explicit server_queues_context(uint16_t tcp_port) :
         rdma_server_context(tcp_port),
@@ -300,6 +307,21 @@ public:
             ibv_reg_mr(pd, gpu_context.gpu_to_cpu_queues, sizeof(queue), my_flags);
         assert(mr_cpu_to_gpu);
         assert(mr_gpu_to_cpu);
+        CUDA_CHECK(cudaMallocHost(&all_images_target, ALL_IMAGES_BYTES));
+        CUDA_CHECK(cudaMallocHost(&all_images_reference, ALL_IMAGES_BYTES));
+        CUDA_CHECK(cudaMallocHost(&all_images_out, ALL_IMAGES_BYTES));
+
+
+    /* register a memory region for the input images. */
+        mr_all_images_target = 
+            ibv_reg_mr(pd, all_images_target, ALL_IMAGES_BYTES, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+        assert(mr_all_images_target);
+        mr_all_images_reference = 
+            ibv_reg_mr(pd, all_images_reference, ALL_IMAGES_BYTES, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+        assert(mr_all_images_reference);
+        mr_all_images_out =
+            ibv_reg_mr(pd, all_images_out, ALL_IMAGES_BYTES, IBV_ACCESS_REMOTE_READ);
+        assert(mr_all_images_out);
 
         my_info.c_to_g_ques.addr = (uchar*) mr_cpu_to_gpu->addr;
         my_info.g_to_c_ques.addr = (uchar*) mr_gpu_to_cpu->addr;
@@ -308,12 +330,12 @@ public:
         my_info.number_of_queues = gpu_context.blocks;
         my_info.ci_offset = (uchar*) &(gpu_context.cpu_to_gpu_queues[0].ci) - (uchar*) &(gpu_context.cpu_to_gpu_queues[0]); 
         my_info.pi_offset = (uchar*) &(gpu_context.gpu_to_cpu_queues[0].pi) - (uchar*) &(gpu_context.cpu_to_gpu_queues[0]);
-        my_info.images_reference.addr = (uchar*) mr_images_reference->addr;
-        my_info.images_reference.rkey = mr_images_reference->rkey;
-        my_info.images_target.addr = (uchar*) mr_images_target->addr;
-        my_info.images_target.rkey = mr_images_target->rkey;
-        my_info.images_out.addr = (uchar*) mr_images_out->addr;
-        my_info.images_out.rkey = mr_images_out->rkey;
+        my_info.images_reference.addr = (uchar*) mr_all_images_reference->addr;
+        my_info.images_reference.rkey = mr_all_images_reference->rkey;
+        my_info.images_target.addr = (uchar*) mr_all_images_target->addr;
+        my_info.images_target.rkey = mr_all_images_target->rkey;
+        my_info.images_out.addr = (uchar*) mr_all_images_out->addr;
+        my_info.images_out.rkey = mr_all_images_out->rkey;
         send_over_socket(&my_info, sizeof(Info));
         /* TODO Exchange rkeys, addresses, and necessary information (e.g.
          * number of queues) with the client */
@@ -323,9 +345,9 @@ public:
         /* TODO destroy the additional server MRs here */
         ibv_dereg_mr(mr_cpu_to_gpu);
         ibv_dereg_mr(mr_gpu_to_cpu);
-        ibv_dereg_mr(mr_images_out);
-        ibv_dereg_mr(mr_images_reference);
-        ibv_dereg_mr(mr_images_target);
+        ibv_dereg_mr(mr_all_images_out);
+        ibv_dereg_mr(mr_all_images_reference);
+        ibv_dereg_mr(mr_all_images_target);
     }
     bool terminate = false;
     
