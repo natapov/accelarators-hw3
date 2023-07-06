@@ -206,7 +206,6 @@ struct Entry {
     uchar* target;
     uchar* reference;
     uchar* img_out;
-    uchar* remote_img_out;
 };
 
 struct queue
@@ -278,8 +277,7 @@ __global__ void gpu_process_image_consumer(queue *cpu_to_gpu_qeueus, queue *gpu_
         if(tid ==0){
             Entry out_entry = {
                 .job_id = entry.job_id,
-                .img_out = entry.img_out,
-                .remote_img_out = entry.remote_img_out};
+                .img_out = entry.img_out};
             while(!g2h->push(&out_entry)){}
         }
 

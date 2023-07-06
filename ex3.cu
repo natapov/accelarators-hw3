@@ -490,17 +490,15 @@ public:
     }
 
     int is_que_empty(Index_Pair pair) {
-        pair.pi = pair.pi % 16;
-        pair.ci = pair.ci % 16;
         return pair.pi-pair.ci == 0;
     }
 
     int is_que_full(Index_Pair pair) {
-        pair.pi = pair.pi % 16;
-        pair.ci = pair.ci % 16;
         return pair.pi-pair.ci == NSLOTS;
     }
-
+    void print_entry(Entry e){
+        printf("id: %d, out:%d, ref:%d, tar:%d \n ", e.job_id, e.img_out, e.reference, e.target);
+    }
     virtual bool enqueue(int job_id, uchar *target, uchar *reference, uchar *result) override
     {
         /* TODO use RDMA Write and RDMA Read operations to enqueue the task on
@@ -510,7 +508,7 @@ public:
         queue* que_arr  = (queue*) server_info.c_to_g_ques.addr;
         Entry* curr_que = (Entry*) &(que_arr[que_num]);
         uint64_t curr_que_pointer = (uint64_t) &(que_arr[que_num]);
-
+        new_entry = {0};
         read(
             mr_indexes->addr,                 // local_src
             idx_size*2,          // len
@@ -527,8 +525,8 @@ public:
         new_entry.target    = &(server_info.images_target.addr   [job_id * IMG_BYTES]);
         new_entry.reference = &(server_info.images_reference.addr[job_id * IMG_BYTES]);
         new_entry.img_out   = &(server_info.images_out.addr      [job_id * IMG_BYTES]);
-        auto dest           = (uint64_t)&(curr_que[pair.pi]);
-        
+        auto dest           = (uint64_t)&(curr_que[pair.pi % NSLOTS]);
+        print_entry(new_entry);
         //write entry
         write(dest,
               sizeof(Entry),
@@ -537,10 +535,20 @@ public:
               mr_entry->lkey,
               wr_num++);
         pair.pi += 1;
+        new_entry = {0};
+
+        read(mr_entry->addr,
+              sizeof(Entry),
+              mr_entry->lkey,
+              dest,
+              server_info.c_to_g_ques.rkey,
+              wr_num++);
+        print_entry(new_entry);
+
         //write consumer index
         
         write(
-              ((uint64_t) curr_que) + pi_offset,
+              curr_que_pointer + pi_offset,
               idx_size,
               server_info.c_to_g_ques.rkey,
               &(pair.pi),
@@ -559,6 +567,8 @@ public:
         /* TODO use RDMA Write and RDMA Read operations to detect the completion and dequeue a processed image
          * through a CPU-GPU producer consumer queue running on the server. */
         int que_num = 0;
+        new_entry = {0};
+
         for (int i = 0; i < server_info.number_of_queues; ++i) {
             que_num = (que_num + i) % server_info.number_of_queues;
             assert(que_num < server_info.number_of_queues);
@@ -578,7 +588,7 @@ public:
             if(is_que_empty(pair)) {
                 continue;
             }    
-            auto dest = (uint64_t)&(curr_que[pair.ci]);
+            auto dest = (uint64_t)&(curr_que[pair.ci % NSLOTS]);
             read(
                 &new_entry,                 // local_src
                 sizeof(Entry),          // len
@@ -588,7 +598,6 @@ public:
                 wr_num++);
 
             *img_id = new_entry.job_id;
-            printf("finished job %d, it's index was %d\n", new_entry.job_id, pair.ci);
             auto copy_src = (uint64_t) &(server_info.images_out.addr  [new_entry.job_id * IMG_BYTES]);
             auto copy_dst = &(((uchar*)mr_images_out->addr)[new_entry.job_id * IMG_BYTES]);
             read(
