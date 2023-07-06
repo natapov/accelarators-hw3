@@ -490,14 +490,14 @@ public:
     }
 
     int is_que_empty(Index_Pair pair) {
-        assert(pair.pi < 16);
-        assert(pair.ci < 16);
+        pair.pi = pair.pi % 16;
+        pair.ci = pair.ci % 16;
         return pair.pi-pair.ci == 0;
     }
 
     int is_que_full(Index_Pair pair) {
-        assert(pair.pi < 16);
-        assert(pair.ci < 16);
+        pair.pi = pair.pi % 16;
+        pair.ci = pair.ci % 16;
         return pair.pi-pair.ci == NSLOTS;
     }
 
@@ -583,13 +583,13 @@ public:
                 wr_num++);
 
             *img_id = new_entry.job_id;
-            auto copy_src = &(server_info.images_out.addr  [new_entry.job_id * IMG_BYTES]);
-            auto copy_dst = (uint64_t) &(((uchar*)mr_images_out->addr)[new_entry.job_id * IMG_BYTES]);
+            auto copy_src = (uint64_t) &(server_info.images_out.addr  [new_entry.job_id * IMG_BYTES]);
+            auto copy_dst = &(((uchar*)mr_images_out->addr)[new_entry.job_id * IMG_BYTES]);
             read(
-                copy_src,                 // local_src
+                copy_dst,                 // local
                 IMG_BYTES,          // len
                 mr_images_out->lkey,                // lkey
-                copy_dst,     // remote_dst
+                copy_src,                   // remote
                 server_info.images_out.rkey,   // rkey
                 wr_num++);
 
