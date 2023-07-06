@@ -1,4 +1,4 @@
-DEBUG=1
+DEBUG=0
 
 CFLAGS+=-Xcompiler=-Wall -maxrregcount=32 -arch=sm_75
 CFLAGS+=`pkg-config libibverbs --cflags --libs`

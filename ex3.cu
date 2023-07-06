@@ -520,15 +520,12 @@ public:
         if(is_que_full(pair)) {
             return false;
         }
-
-
         
         new_entry.job_id    = job_id;
         new_entry.target    = &(server_info.images_target.addr   [job_id * IMG_BYTES]);
         new_entry.reference = &(server_info.images_reference.addr[job_id * IMG_BYTES]);
         new_entry.img_out   = &(server_info.images_out.addr      [job_id * IMG_BYTES]);
         auto dest           = (uint64_t)&(curr_que[pair.pi % NSLOTS]);
-
 
         write(
             (uint64_t) new_entry.target,                            // remote_dst
@@ -558,17 +555,6 @@ public:
               wr_num++);
         pair.pi += 1;
         new_entry = {0};
-
-        // read(mr_entry->addr,
-        //       sizeof(Entry),
-        //       mr_entry->lkey,
-        //       dest,
-        //       server_info.c_to_g_ques.rkey,
-        //       wr_num++);
-        // print_entry(new_entry);
-        // printf("ci: %d, pi: %d\n", pair.ci, pair.pi);
-
-        //write consumer index
         
         write(
               curr_que_pointer + pi_offset,
@@ -578,10 +564,6 @@ public:
               mr_indexes->lkey,
               wr_num++);
 
-
-        // printf("did write, job_id: %d\n", job_id);
-        // printf("consumer_index %d\n", pair.ci);
-        // printf("producer_index %d\n", pair.pi);
         return true;
     }
 
