@@ -275,6 +275,8 @@ __global__ void gpu_process_image_consumer(queue *cpu_to_gpu_qeueus, queue *gpu_
             break;
         }
         process_image(entry.target, entry.reference, entry.img_out);
+        auto my_pointer = entry.reference;
+        //printf("%c%c%c%c%c%c%c%c,",my_pointer[0],my_pointer[1],my_pointer[2],my_pointer[3],my_pointer[4],my_pointer[5],my_pointer[6],my_pointer[7]);
         __syncthreads();
         if(tid ==0){
             Entry out_entry = {
@@ -305,7 +307,7 @@ public:
     int threadsPerBlock, arrsSizeBytes;
 
     queue_server(int threads) {
-        blocks = 1;
+        blocks = calc_blocks(threads);
         //TODO complete according to HW2
         //(This file should be almost identical to ex2.cu from homework 2.)
 

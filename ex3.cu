@@ -312,13 +312,13 @@ public:
 
     /* register a memory region for the input images. */
         mr_all_images_target = 
-            ibv_reg_mr(pd, all_images_target, ALL_IMAGES_BYTES, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+            ibv_reg_mr(pd, all_images_target, ALL_IMAGES_BYTES, IBV_ACCESS_REMOTE_READ | IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
         assert(mr_all_images_target);
         mr_all_images_reference = 
-            ibv_reg_mr(pd, all_images_reference, ALL_IMAGES_BYTES, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+            ibv_reg_mr(pd, all_images_reference, ALL_IMAGES_BYTES, IBV_ACCESS_REMOTE_READ | IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
         assert(mr_all_images_reference);
         mr_all_images_out =
-            ibv_reg_mr(pd, all_images_out, ALL_IMAGES_BYTES, IBV_ACCESS_REMOTE_READ);
+            ibv_reg_mr(pd, all_images_out, ALL_IMAGES_BYTES, IBV_ACCESS_REMOTE_READ | IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
         assert(mr_all_images_out);
 
         my_info.c_to_g_ques.addr = (uchar*) mr_cpu_to_gpu->addr;
@@ -467,6 +467,7 @@ public:
     }
     virtual void set_input_images(uchar *images_target, uchar* images_reference, size_t bytes) override
     {
+        printf("hello sailor\n");
         // TODO register memory
         mr_images_target = ibv_reg_mr(pd, images_target, bytes, my_flags);
         if (!mr_images_target) {
@@ -478,6 +479,11 @@ public:
             perror("ibv_reg_mr() failed for input images");
             exit(1);
         }
+        uchar* my_pointer = (uchar*) mr_images_reference->addr;
+        printf("%c%c%c%c%c%c%c%c,\n",my_pointer[0],my_pointer[1],my_pointer[2],my_pointer[3],my_pointer[4],my_pointer[5],my_pointer[6],my_pointer[7]);
+        my_pointer = (uchar*) mr_images_reference->addr;
+        printf("%c%c%c%c%c%c%c%c,\n",my_pointer[0],my_pointer[1],my_pointer[2],my_pointer[3],my_pointer[4],my_pointer[5],my_pointer[6],my_pointer[7]);
+
         //uint64_t remote_dst, uint32_t len, uint32_t rkey, void *local_src, uint32_t lkey, uint64_t wr_id, uint32_t *immediate = (uint32_t *)__null)
         write((uint64_t) server_info.images_target.addr, bytes, server_info.images_target.rkey, mr_images_target->addr, mr_images_target->lkey, wr_num++);
         write((uint64_t) server_info.images_reference.addr, bytes, server_info.images_reference.rkey, mr_images_reference->addr, mr_images_reference->lkey, wr_num++);
@@ -571,7 +577,7 @@ public:
     {
         /* TODO use RDMA Write and RDMA Read operations to detect the completion and dequeue a processed image
          * through a CPU-GPU producer consumer queue running on the server. */
-        int que_num = 0;
+        int que_num = rand() % server_info.number_of_queues;
         new_entry = {0};
         for (int i = 0; i < server_info.number_of_queues; ++i) {
             que_num = (que_num + i) % server_info.number_of_queues;
@@ -589,9 +595,9 @@ public:
                 server_info.g_to_c_ques.rkey,   // rkey
                 wr_num++);
             if(is_que_empty(pair)) {
-                return false;
+                continue;
             }    
-            printf("ci: %d, pi: %d\n", pair.ci, pair.pi);
+            //printf("ci: %d, pi: %d\n", pair.ci, pair.pi);
 
             auto dest = (uint64_t)&(curr_que[pair.ci % NSLOTS]);
             read(
@@ -601,7 +607,7 @@ public:
                 dest,     // remote_dst
                 server_info.g_to_c_ques.rkey,   // rkey
                 wr_num++);
-            print_entry(new_entry);
+            //print_entry(new_entry);
             *img_id = new_entry.job_id;
             auto copy_src = (uint64_t) &(server_info.images_out.addr  [new_entry.job_id * IMG_BYTES]);
             auto copy_dst = &(((uchar*)mr_images_out->addr)[new_entry.job_id * IMG_BYTES]);
