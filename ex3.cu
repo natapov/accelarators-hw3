@@ -506,13 +506,16 @@ public:
         /* TODO use RDMA Write and RDMA Read operations to enqueue the task on
          * a CPU-GPU producer consumer queue running on the server. */
         /* Create Send Work Request for RDMA Read */
+        auto que_num = job_id % server_info.number_of_queues;
         queue* que_arr  = (queue*) server_info.c_to_g_ques.addr;
-        Entry* curr_que = (Entry*) &(que_arr[job_id % server_info.number_of_queues]);
+        Entry* curr_que = (Entry*) &(que_arr[que_num]);
+        uint64_t curr_que_pointer = (uint64_t) &(que_arr[que_num]);
+
         read(
             mr_indexes->addr,                 // local_src
             idx_size*2,          // len
             mr_indexes->lkey,                // lkey
-            ((uint64_t) curr_que),     // remote_dst
+            curr_que_pointer + both_offset,     // remote_dst
             server_info.c_to_g_ques.rkey,   // rkey
             wr_num++);                        // wr_id
 
@@ -545,9 +548,9 @@ public:
               wr_num++);
 
 
-        printf("did write, job_id: %d\n", job_id);
-        printf("consumer_index %d\n", pair.ci);
-        printf("producer_index %d\n", pair.pi);
+        // printf("did write, job_id: %d\n", job_id);
+        // printf("consumer_index %d\n", pair.ci);
+        // printf("producer_index %d\n", pair.pi);
         return true;
     }
 
@@ -555,18 +558,20 @@ public:
     {
         /* TODO use RDMA Write and RDMA Read operations to detect the completion and dequeue a processed image
          * through a CPU-GPU producer consumer queue running on the server. */
-        int que_num = rand() % server_info.number_of_queues;
+        int que_num = 0;
         for (int i = 0; i < server_info.number_of_queues; ++i) {
             que_num = (que_num + i) % server_info.number_of_queues;
             assert(que_num < server_info.number_of_queues);
             queue* que_arr  = (queue*) server_info.g_to_c_ques.addr;
+            uint64_t curr_que_pointer = (uint64_t) &(que_arr[que_num]);
+
             Entry* curr_que = (Entry*) &(que_arr[que_num]);
             
             read(
                 mr_indexes->addr,                 // local_dst
                 idx_size*2,          // len
                 mr_indexes->lkey,                // lkey
-                ((uint64_t) curr_que) + both_offset,     // remote_src
+                curr_que_pointer + both_offset,     // remote_src
                 server_info.g_to_c_ques.rkey,   // rkey
                 wr_num++);
             
@@ -583,6 +588,7 @@ public:
                 wr_num++);
 
             *img_id = new_entry.job_id;
+            printf("finished job %d, it's index was %d\n", new_entry.job_id, pair.ci);
             auto copy_src = (uint64_t) &(server_info.images_out.addr  [new_entry.job_id * IMG_BYTES]);
             auto copy_dst = &(((uchar*)mr_images_out->addr)[new_entry.job_id * IMG_BYTES]);
             read(
@@ -596,15 +602,15 @@ public:
             pair.ci += 1;
 
             write(
-                ((uint64_t) curr_que) + ci_offset,
+                curr_que_pointer + ci_offset,
                 idx_size,
                 server_info.g_to_c_ques.rkey,
                 &(pair.ci),
                 mr_indexes->lkey,
                 wr_num++);
-            printf("did deque, job_id: %d\n", new_entry.job_id);
-            printf("consumer_index %d\n", pair.ci);
-            printf("producer_index %d\n", pair.pi);
+            // printf("did deque, job_id: %d\n", new_entry.job_id);
+            // printf("consumer_index %d\n", pair.ci);
+            // printf("producer_index %d\n", pair.pi);
             return true;
         }
         return false;

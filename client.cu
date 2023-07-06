@@ -17,9 +17,13 @@
 
 long long int distance_sqr_between_image_arrays(uchar *img_arr1, uchar *img_arr2) {
     long long int distance_sqr = 0;
+    auto printed = false;
     for (size_t i = 0; i < N_IMAGES * IMG_BYTES; i++) {
         if (img_arr1[i] != img_arr2[i])
-            dbg_printf("cpu[0x%4lx/0x%04lx] == 0x%x != 0x%x\n", i / (IMG_BYTES), i % (IMG_BYTES), img_arr1[i], img_arr2[i]);
+            if(!printed) {
+                dbg_printf("cpu[0x%4lx/0x%04lx] == 0x%x != 0x%x\n", i / (IMG_BYTES), i % (IMG_BYTES), img_arr1[i], img_arr2[i]);
+                printed = true;
+            }
         distance_sqr += SQR(img_arr1[i] - img_arr2[i]);
     }
     return distance_sqr;
