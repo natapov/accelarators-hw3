@@ -374,7 +374,6 @@ public:
 };
 
 struct Index_Pair{
-    char pad_a[128];
     int pi;
     char pad_b[128];
     int ci;
