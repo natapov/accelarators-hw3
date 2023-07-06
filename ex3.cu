@@ -467,8 +467,6 @@ public:
     }
     virtual void set_input_images(uchar *images_target, uchar* images_reference, size_t bytes) override
     {
-        printf("hello sailor\n");
-        // TODO register memory
         mr_images_target = ibv_reg_mr(pd, images_target, bytes, my_flags);
         if (!mr_images_target) {
             perror("ibv_reg_mr() failed for input images");
@@ -479,14 +477,6 @@ public:
             perror("ibv_reg_mr() failed for input images");
             exit(1);
         }
-        uchar* my_pointer = (uchar*) mr_images_reference->addr;
-        printf("%c%c%c%c%c%c%c%c,\n",my_pointer[0],my_pointer[1],my_pointer[2],my_pointer[3],my_pointer[4],my_pointer[5],my_pointer[6],my_pointer[7]);
-        my_pointer = (uchar*) mr_images_reference->addr;
-        printf("%c%c%c%c%c%c%c%c,\n",my_pointer[0],my_pointer[1],my_pointer[2],my_pointer[3],my_pointer[4],my_pointer[5],my_pointer[6],my_pointer[7]);
-
-        //uint64_t remote_dst, uint32_t len, uint32_t rkey, void *local_src, uint32_t lkey, uint64_t wr_id, uint32_t *immediate = (uint32_t *)__null)
-        write((uint64_t) server_info.images_target.addr, bytes, server_info.images_target.rkey, mr_images_target->addr, mr_images_target->lkey, wr_num++);
-        write((uint64_t) server_info.images_reference.addr, bytes, server_info.images_reference.rkey, mr_images_reference->addr, mr_images_reference->lkey, wr_num++);
     }
 
     virtual void set_output_images(uchar *images_out, size_t bytes) override {
@@ -530,14 +520,36 @@ public:
         if(is_que_full(pair)) {
             return false;
         }
+
+
         
         new_entry.job_id    = job_id;
         new_entry.target    = &(server_info.images_target.addr   [job_id * IMG_BYTES]);
         new_entry.reference = &(server_info.images_reference.addr[job_id * IMG_BYTES]);
         new_entry.img_out   = &(server_info.images_out.addr      [job_id * IMG_BYTES]);
         auto dest           = (uint64_t)&(curr_que[pair.pi % NSLOTS]);
-        //print_entry(new_entry);
-        //write entry
+
+
+        write(
+            (uint64_t) new_entry.target,                            // remote_dst
+            IMG_BYTES,                                      // len
+            server_info.images_target.rkey,    // rkey
+            target,                                         // local_src
+            mr_images_target->lkey,                         // lkey
+            job_id                                        // wr_id
+        );
+
+        write(
+            (uint64_t) new_entry.reference,                            // remote_dst
+            IMG_BYTES,                                      // len
+            server_info.images_reference.rkey,    // rkey
+            reference,                                         // local_src
+            mr_images_reference->lkey,                         // lkey
+            job_id                                        // wr_id
+        );
+    
+
+
         write(dest,
               sizeof(Entry),
               server_info.c_to_g_ques.rkey,
