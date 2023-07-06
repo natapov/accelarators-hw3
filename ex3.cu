@@ -501,7 +501,7 @@ public:
         return pair.pi-pair.ci == NSLOTS;
     }
     void print_entry(Entry e){
-        printf("id: %d, out:%d, ref:%d, tar:%d \n ", e.job_id, e.img_out, e.reference, e.target);
+        printf("id: %d, out:%d, ref:%d, tar:%d\n ", e.job_id, e.img_out, e.reference, e.target);
     }
     virtual bool enqueue(int job_id, uchar *target, uchar *reference, uchar *result) override
     {
@@ -530,7 +530,7 @@ public:
         new_entry.reference = &(server_info.images_reference.addr[job_id * IMG_BYTES]);
         new_entry.img_out   = &(server_info.images_out.addr      [job_id * IMG_BYTES]);
         auto dest           = (uint64_t)&(curr_que[pair.pi % NSLOTS]);
-        print_entry(new_entry);
+        //print_entry(new_entry);
         //write entry
         write(dest,
               sizeof(Entry),
@@ -541,14 +541,14 @@ public:
         pair.pi += 1;
         new_entry = {0};
 
-        read(mr_entry->addr,
-              sizeof(Entry),
-              mr_entry->lkey,
-              dest,
-              server_info.c_to_g_ques.rkey,
-              wr_num++);
-        print_entry(new_entry);
-        printf("ci: %d, pi: %d\n", pair.ci, pair.pi);
+        // read(mr_entry->addr,
+        //       sizeof(Entry),
+        //       mr_entry->lkey,
+        //       dest,
+        //       server_info.c_to_g_ques.rkey,
+        //       wr_num++);
+        // print_entry(new_entry);
+        // printf("ci: %d, pi: %d\n", pair.ci, pair.pi);
 
         //write consumer index
         
@@ -573,7 +573,6 @@ public:
          * through a CPU-GPU producer consumer queue running on the server. */
         int que_num = 0;
         new_entry = {0};
-
         for (int i = 0; i < server_info.number_of_queues; ++i) {
             que_num = (que_num + i) % server_info.number_of_queues;
             assert(que_num < server_info.number_of_queues);
@@ -589,10 +588,11 @@ public:
                 curr_que_pointer + both_offset,     // remote_src
                 server_info.g_to_c_ques.rkey,   // rkey
                 wr_num++);
-            //printf("ci: %d, pi: %d\n", pair.ci, pair.pi);
             if(is_que_empty(pair)) {
                 return false;
             }    
+            printf("ci: %d, pi: %d\n", pair.ci, pair.pi);
+
             auto dest = (uint64_t)&(curr_que[pair.ci % NSLOTS]);
             read(
                 &new_entry,                 // local_src
@@ -601,7 +601,7 @@ public:
                 dest,     // remote_dst
                 server_info.g_to_c_ques.rkey,   // rkey
                 wr_num++);
-            //print_entry(new_entry);
+            print_entry(new_entry);
             *img_id = new_entry.job_id;
             auto copy_src = (uint64_t) &(server_info.images_out.addr  [new_entry.job_id * IMG_BYTES]);
             auto copy_dst = &(((uchar*)mr_images_out->addr)[new_entry.job_id * IMG_BYTES]);
@@ -622,9 +622,6 @@ public:
                 &(pair.ci),
                 mr_indexes->lkey,
                 wr_num++);
-            // printf("did deque, job_id: %d\n", new_entry.job_id);
-            // printf("consumer_index %d\n", pair.ci);
-            // printf("producer_index %d\n", pair.pi);
             return true;
         }
         return false;
