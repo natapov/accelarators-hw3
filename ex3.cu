@@ -374,8 +374,11 @@ public:
 };
 
 struct Index_Pair{
-    int ci;
+    char pad_a[128];
     int pi;
+    char pad_b[128];
+    int ci;
+    char pad_c[128];
 };
 
 class client_queues_context : public rdma_client_context {
@@ -385,11 +388,13 @@ private:
 
     Index_Pair pair;
     Entry new_entry;
-    const size_t ci_offset = sizeof(Entry)*NSLOTS + sizeof(int);
-    const size_t pi_offset   = sizeof(Entry)*NSLOTS;
-    const size_t both_offset = sizeof(Entry)*NSLOTS;
-    const size_t idx_size = sizeof(int);
-
+    const size_t idx_size = sizeof(int) + sizeof(char) *128;
+    const size_t arr_size = sizeof(Entry)*NSLOTS + sizeof(char) *128;
+    const size_t ci_offset = arr_size + idx_size;
+    const size_t pi_offset   = arr_size;
+    const size_t both_offset = arr_size;
+    
+    cuda::atomic<int> lock;
     struct ibv_mr* mr_entry;
     struct ibv_mr* mr_indexes;
     struct ibv_mr* mr_images_target; /* Memory region for input images */
@@ -544,6 +549,7 @@ public:
               server_info.c_to_g_ques.rkey,
               wr_num++);
         print_entry(new_entry);
+        printf("ci: %d, pi: %d\n", pair.ci, pair.pi);
 
         //write consumer index
         
@@ -584,9 +590,9 @@ public:
                 curr_que_pointer + both_offset,     // remote_src
                 server_info.g_to_c_ques.rkey,   // rkey
                 wr_num++);
-            
+            //printf("ci: %d, pi: %d\n", pair.ci, pair.pi);
             if(is_que_empty(pair)) {
-                continue;
+                return false;
             }    
             auto dest = (uint64_t)&(curr_que[pair.ci % NSLOTS]);
             read(
@@ -596,12 +602,12 @@ public:
                 dest,     // remote_dst
                 server_info.g_to_c_ques.rkey,   // rkey
                 wr_num++);
-
+            //print_entry(new_entry);
             *img_id = new_entry.job_id;
             auto copy_src = (uint64_t) &(server_info.images_out.addr  [new_entry.job_id * IMG_BYTES]);
             auto copy_dst = &(((uchar*)mr_images_out->addr)[new_entry.job_id * IMG_BYTES]);
             read(
-                copy_dst,                 // local
+                copy_dst,           // local
                 IMG_BYTES,          // len
                 mr_images_out->lkey,                // lkey
                 copy_src,                   // remote

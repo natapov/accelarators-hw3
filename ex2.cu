@@ -211,7 +211,9 @@ struct Entry {
 struct queue
 {
     Entry data[NSLOTS];
+    char pad_a[128];
     cuda::atomic<int> pi;
+    char pad_b[128];
     cuda::atomic<int> ci;
     char pad_c[128];
     cuda::atomic<bool> kill;
@@ -226,7 +228,7 @@ struct queue
         if ((cur_pi-cur_ci) == 0){
             return false;
         }
-        *ent = data[cur_ci & (NSLOTS - 1)];
+        *ent = data[cur_ci % NSLOTS];
         ci.store(cur_ci+1, memory_order_release);
         
         return true;
@@ -303,7 +305,7 @@ public:
     int threadsPerBlock, arrsSizeBytes;
 
     queue_server(int threads) {
-        blocks = calc_blocks(threads);
+        blocks = 1;
         //TODO complete according to HW2
         //(This file should be almost identical to ex2.cu from homework 2.)
 
