@@ -272,8 +272,6 @@ struct Remote {
 };
 struct Info {
     int number_of_queues;
-    int ci_offset;
-    int pi_offset;
     Remote c_to_g_ques;
     Remote g_to_c_ques;
     Remote images_target;    
@@ -328,8 +326,6 @@ public:
         my_info.c_to_g_ques.rkey = mr_cpu_to_gpu->rkey;
         my_info.g_to_c_ques.rkey = mr_gpu_to_cpu->rkey;
         my_info.number_of_queues = gpu_context.blocks;
-        my_info.ci_offset = (uchar*) &(gpu_context.cpu_to_gpu_queues[0].ci) - (uchar*) &(gpu_context.cpu_to_gpu_queues[0]); 
-        my_info.pi_offset = (uchar*) &(gpu_context.gpu_to_cpu_queues[0].pi) - (uchar*) &(gpu_context.cpu_to_gpu_queues[0]);
         my_info.images_reference.addr = (uchar*) mr_all_images_reference->addr;
         my_info.images_reference.rkey = mr_all_images_reference->rkey;
         my_info.images_target.addr = (uchar*) mr_all_images_target->addr;
@@ -387,10 +383,12 @@ private:
     /* TODO define other memory regions used by the client here */
     Info server_info;
 
-    Index_Pair c_to_g;
-    Index_Pair g_to_c;
-    
+    Index_Pair pair;
     Entry new_entry;
+    const size_t ci_offset = sizeof(Entry)*NSLOTS + sizeof(int);
+    const size_t pi_offset   = sizeof(Entry)*NSLOTS;
+    const size_t both_offset = sizeof(Entry)*NSLOTS;
+    const size_t idx_size = sizeof(int);
 
     struct ibv_mr* mr_entry;
     struct ibv_mr* mr_indexes;
@@ -403,18 +401,17 @@ private:
 public:
     client_queues_context(uint16_t tcp_port) : rdma_client_context(tcp_port)
     {
+        assert(sizeof(cuda::atomic<int>) == sizeof(int));
         /* TODO communicate with server to discover number of queues, necessary
          * rkeys / address, or other additional information needed to operate
          * the GPU queues remotely. */
-        mr_indexes = ibv_reg_mr(pd, &(c_to_g), sizeof(Index_Pair)*2, my_flags);
+        mr_indexes = ibv_reg_mr(pd, &pair, sizeof(Index_Pair), my_flags);
         assert(mr_indexes);
         mr_entry = ibv_reg_mr(pd, &(new_entry), sizeof(Entry), my_flags);
         assert(mr_entry);
 
         recv_over_socket(&server_info, sizeof(Info));
 
-        assert(server_info.ci_offset);
-        assert(server_info.ci_offset);
         assert(server_info.c_to_g_ques.addr);
         assert(server_info.g_to_c_ques.addr);
 
@@ -492,16 +489,16 @@ public:
         }
     }
 
-    int is_que_empty(Index_Pair p) {
-        assert(p.pi < 16);
-        assert(p.ci < 16);
-        return p.pi-p.ci == 0;
+    int is_que_empty(Index_Pair pair) {
+        assert(pair.pi < 16);
+        assert(pair.ci < 16);
+        return pair.pi-pair.ci == 0;
     }
 
-    int is_que_full(Index_Pair p) {
-        assert(p.pi < 16);
-        assert(p.ci < 16);
-        return p.pi-p.ci == NSLOTS;
+    int is_que_full(Index_Pair pair) {
+        assert(pair.pi < 16);
+        assert(pair.ci < 16);
+        return pair.pi-pair.ci == NSLOTS;
     }
 
     virtual bool enqueue(int job_id, uchar *target, uchar *reference, uchar *result) override
@@ -512,14 +509,14 @@ public:
         queue* que_arr  = (queue*) server_info.c_to_g_ques.addr;
         Entry* curr_que = (Entry*) &(que_arr[job_id % server_info.number_of_queues]);
         read(
-            &c_to_g.ci,                 // local_src
-            sizeof(c_to_g.ci),          // len
+            mr_indexes->addr,                 // local_src
+            idx_size*2,          // len
             mr_indexes->lkey,                // lkey
-            ((uint64_t) curr_que) + server_info.ci_offset,     // remote_dst
+            ((uint64_t) curr_que),     // remote_dst
             server_info.c_to_g_ques.rkey,   // rkey
             wr_num++);                        // wr_id
 
-        if(is_que_full(c_to_g)) {
+        if(is_que_full(pair)) {
             return false;
         }
         
@@ -527,7 +524,7 @@ public:
         new_entry.target    = &(server_info.images_target.addr   [job_id * IMG_BYTES]);
         new_entry.reference = &(server_info.images_reference.addr[job_id * IMG_BYTES]);
         new_entry.img_out   = &(server_info.images_out.addr      [job_id * IMG_BYTES]);
-        auto dest           = (uint64_t)&(curr_que[job_id]);
+        auto dest           = (uint64_t)&(curr_que[pair.pi]);
         
         //write entry
         write(dest,
@@ -536,21 +533,21 @@ public:
               mr_entry->addr,
               mr_entry->lkey,
               wr_num++);
-        c_to_g.pi += 1;
+        pair.pi += 1;
         //write consumer index
         
         write(
-              ((uint64_t) curr_que) + server_info.pi_offset,
-              sizeof(c_to_g.pi),
+              ((uint64_t) curr_que) + pi_offset,
+              idx_size,
               server_info.c_to_g_ques.rkey,
-              &c_to_g.pi,
+              &(pair.pi),
               mr_indexes->lkey,
               wr_num++);
 
 
         printf("did write, job_id: %d\n", job_id);
-        printf("consumer_index %d\n", c_to_g.ci);
-        printf("producer_index %d\n", c_to_g.pi);
+        printf("consumer_index %d\n", pair.ci);
+        printf("producer_index %d\n", pair.pi);
         return true;
     }
 
@@ -565,18 +562,17 @@ public:
             queue* que_arr  = (queue*) server_info.g_to_c_ques.addr;
             Entry* curr_que = (Entry*) &(que_arr[que_num]);
             read(
-                &g_to_c.pi,                 // local_src
-                sizeof(g_to_c.pi),          // len
+                mr_indexes->addr,                 // local_src
+                idx_size*2,          // len
                 mr_indexes->lkey,                // lkey
-                ((uint64_t) curr_que) + server_info.pi_offset,     // remote_dst
+                ((uint64_t) curr_que),     // remote_dst
                 server_info.g_to_c_ques.rkey,   // rkey
                 wr_num++);
             
-            g_to_c.pi = g_to_c.pi % 16;
-            if(is_que_empty(g_to_c)) {
+            if(is_que_empty(pair)) {
                 continue;
             }    
-            auto dest = (uint64_t)&(curr_que[g_to_c.ci]);
+            auto dest = (uint64_t)&(curr_que[pair.ci]);
             read(
                 &new_entry,                 // local_src
                 sizeof(Entry),          // len
@@ -596,18 +592,18 @@ public:
                 server_info.images_out.rkey,   // rkey
                 wr_num++);
 
-            g_to_c.ci += 1;
+            pair.ci += 1;
 
             write(
-                ((uint64_t) curr_que) + server_info.ci_offset,
-                sizeof(g_to_c.ci),
+                ((uint64_t) curr_que) + ci_offset,
+                idx_size,
                 server_info.g_to_c_ques.rkey,
-                &g_to_c.ci,
+                &(pair.ci),
                 mr_indexes->lkey,
                 wr_num++);
             printf("did deque, job_id: %d\n", new_entry.job_id);
-            printf("consumer_index %d\n", g_to_c.ci);
-            printf("producer_index %d\n", g_to_c.pi);
+            printf("consumer_index %d\n", pair.ci);
+            printf("producer_index %d\n", pair.pi);
             return true;
         }
         return false;

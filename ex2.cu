@@ -212,9 +212,7 @@ struct Entry {
 struct queue
 {
     Entry data[NSLOTS];
-    char pad_a[128];
     cuda::atomic<int> pi;
-    char pad_b[128];
     cuda::atomic<int> ci;
     char pad_c[128];
     cuda::atomic<bool> kill;
