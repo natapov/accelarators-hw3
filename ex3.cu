@@ -300,9 +300,9 @@ public:
         Info my_info;
 
         mr_cpu_to_gpu =
-            ibv_reg_mr(pd, gpu_context.cpu_to_gpu_queues, sizeof(queue), my_flags);
+            ibv_reg_mr(pd, gpu_context.cpu_to_gpu_queues, sizeof(queue) * gpu_context.blocks, my_flags);
         mr_gpu_to_cpu =
-            ibv_reg_mr(pd, gpu_context.gpu_to_cpu_queues, sizeof(queue), my_flags);
+            ibv_reg_mr(pd, gpu_context.gpu_to_cpu_queues, sizeof(queue) * gpu_context.blocks, my_flags);
         assert(mr_cpu_to_gpu);
         assert(mr_gpu_to_cpu);
         CUDA_CHECK(cudaMallocHost(&all_images_target, ALL_IMAGES_BYTES));
@@ -475,8 +475,8 @@ public:
             exit(1);
         }
         //uint64_t remote_dst, uint32_t len, uint32_t rkey, void *local_src, uint32_t lkey, uint64_t wr_id, uint32_t *immediate = (uint32_t *)__null)
-        write((uint64_t) server_info.images_target.addr, bytes, server_info.images_target.rkey, mr_images_target->addr, mr_images_target->lkey, 1);
-        write((uint64_t) server_info.images_reference.addr, bytes, server_info.images_reference.rkey, mr_images_reference->addr, mr_images_reference->lkey, 2);
+        write((uint64_t) server_info.images_target.addr, bytes, server_info.images_target.rkey, mr_images_target->addr, mr_images_target->lkey, wr_num++);
+        write((uint64_t) server_info.images_reference.addr, bytes, server_info.images_reference.rkey, mr_images_reference->addr, mr_images_reference->lkey, wr_num++);
     }
 
     virtual void set_output_images(uchar *images_out, size_t bytes) override {
@@ -561,11 +561,12 @@ public:
             assert(que_num < server_info.number_of_queues);
             queue* que_arr  = (queue*) server_info.g_to_c_ques.addr;
             Entry* curr_que = (Entry*) &(que_arr[que_num]);
+            
             read(
-                mr_indexes->addr,                 // local_src
+                mr_indexes->addr,                 // local_dst
                 idx_size*2,          // len
                 mr_indexes->lkey,                // lkey
-                ((uint64_t) curr_que),     // remote_dst
+                ((uint64_t) curr_que) + both_offset,     // remote_src
                 server_info.g_to_c_ques.rkey,   // rkey
                 wr_num++);
             
